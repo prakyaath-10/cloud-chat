@@ -1,82 +1,123 @@
 'use client';
-import { useState, useEffect } from 'react';
-import { auth, googleProvider } from '../lib/firebase';
-import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { watchMessages, sendMessage } from '../lib/chatService';
-import { Send, LogOut, LogIn } from 'lucide-react';
 
-export default function Home() {
-  const [user, setUser] = useState<any>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [input, setInput] = useState('');
-  const roomId = "general-room"; // Default public room
+import { useState, useEffect, useRef } from 'react';
+import { auth, db } from '../lib/firebase';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  onSnapshot, 
+  serverTimestamp 
+} from 'firebase/firestore';
 
+interface Message {
+  id: string;
+  text: string;
+  uid: string;
+  displayName: string;
+  createdAt: any;
+}
+
+export default function ChatRoom() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Fetch messages in real-time from Firestore
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsubscribeAuth();
+    const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedMessages: Message[] = [];
+      snapshot.forEach((doc) => {
+        fetchedMessages.push({ id: doc.id, ...doc.data() } as Message);
+      });
+      setMessages(fetchedMessages);
+    });
+
+    return () => unsubscribe();
   }, []);
 
+  // Auto-scroll down when new messages arrive
   useEffect(() => {
-    const unsubscribeMsgs = watchMessages(roomId, (msgs) => setMessages(msgs));
-    return () => unsubscribeMsgs();
-  }, [roomId]);
+    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  const handleSend = async (e: React.FormEvent) => {
+  // Handle sending a message
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !user) return;
-    await sendMessage(roomId, user.uid, input);
-    setInput('');
+    if (!newMessage.trim()) return;
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+      await addDoc(collection(db, 'messages'), {
+        text: newMessage,
+        uid: user.uid,
+        displayName: user.displayName || 'Anonymous',
+        createdAt: serverTimestamp(),
+      });
+      setNewMessage('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
   };
 
-  if (!user) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-        <h1 className="text-2xl font-bold mb-4 text-gray-800">Welcome to Cloud Chat</h1>
-        <button 
-          onClick={() => signInWithPopup(auth, googleProvider)}
-          className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 transition"
-        >
-          <LogIn size={20} /> Sign in with Google
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col h-screen max-w-2xl mx-auto border bg-white shadow-sm">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
-        <span className="font-semibold text-gray-700">Room: General</span>
-        <button onClick={() => signOut(auth)} className="text-gray-500 hover:text-red-600 transition">
-          <LogOut size={20} />
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 max-w-2xl mx-auto border-x border-zinc-800">
+      {/* Chat Header */}
+      <header className="p-4 bg-zinc-900 border-b border-zinc-800 flex justify-between items-center">
+        <h1 className="font-semibold text-lg">Room: General</h1>
+        <button 
+          onClick={() => auth.signOut()} 
+          className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-md transition"
+        >
+          Sign Out
         </button>
-      </div>
+      </header>
 
-      {/* Message Feed */}
+      {/* Message List Section */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg) => {
-          const isMe = msg.senderId === user.uid;
+          const isMe = msg.uid === auth.currentUser?.uid;
           return (
-            <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-              <div className={`max-w-xs md:max-w-md rounded-2xl px-4 py-2 text-sm ${isMe ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800'}`}>
-                <p>{msg.text}</p>
+            <div 
+              key={msg.id} 
+              className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+            >
+              <span className="text-[10px] text-zinc-500 mb-1 px-1">
+                {msg.displayName}
+              </span>
+              <div 
+                className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                  isMe 
+                    ? 'bg-blue-600 text-white rounded-br-sm' 
+                    : 'bg-zinc-800 text-zinc-200 rounded-bl-sm'
+                }`}
+              >
+                {msg.text}
               </div>
             </div>
           );
         })}
+        <div ref={scrollRef} />
       </div>
 
-      {/* Input Form */}
-      <form onSubmit={handleSend} className="flex items-center gap-2 p-3 border-t bg-white">
-        <input 
-          type="text" 
-          value={input} 
-          onChange={(e) => setInput(e.target.value)} 
-          placeholder="Type a message..." 
-          className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:border-blue-500 text-gray-800"
+      {/* Message Input Bar */}
+      <form onSubmit={handleSendMessage} className="p-4 bg-zinc-900 border-t border-zinc-800 flex gap-2">
+        <input
+          type="text"
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
+          placeholder="Type a message..."
+          className="flex-1 bg-zinc-950 border border-zinc-800 focus:border-blue-600 focus:outline-none rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500"
         />
-        <button type="submit" className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition">
-          <Send size={18} />
+        <button
+          type="submit"
+          className="bg-blue-600 hover:bg-blue-500 text-white px-5 rounded-xl font-medium text-sm transition flex items-center justify-center"
+        >
+          Send
         </button>
       </form>
     </div>
